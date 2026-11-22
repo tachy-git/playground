@@ -6,7 +6,7 @@
 <title>텔레스트레이션 진행 도우미</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Jua&family=Noto+Sans+KR:wght@400;600;800&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/mqtt@5.16.1/dist/mqtt.min.js"></script>
 <style>
   :root {
     --bg: #fdf6ec;
@@ -94,7 +94,8 @@
     font-family: "Jua", sans-serif; font-size: 40px; letter-spacing: 6px;
     text-align: center; margin: 4px 0 10px;
   }
-  .link { font-size: 13px; word-break: break-all; color: var(--muted); text-align: center; margin-bottom: 10px; }
+  .link-box { font-size: 13px; color: var(--muted); text-align: center; padding: 10px; }
+  .err { color: var(--accent); font-size: 13px; font-weight: 600; margin-top: 6px; }
   .round { font-family: "Jua", sans-serif; font-size: 18px; color: var(--muted); }
   .task { font-family: "Jua", sans-serif; font-size: 30px; margin: 6px 0; }
   .task.draw { color: var(--accent); }
@@ -149,8 +150,10 @@ const WORDS = [
   "택배","산타클로스","미라","인어공주","허수아비","시소","그네","미끄럼틀","모래성","불꽃놀이"
 ];
 
-const ID_PREFIX = "telestr-kr-";
-const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const BROKER = "wss://broker.emqx.io:8084/mqtt";
+const TOPIC_ROOT = "telestr-kr/v2/";
+const HOST_STALE_MS = 30000;
+const PLAYER_STALE_MS = 12000;
 
 // ======= Small storage helpers (may be blocked, so always try/catch) =======
 function load(key, fallback) {
@@ -168,14 +171,13 @@ let myName = load("tele-name", "");
 
 // ======= Connection state =======
 const params = new URLSearchParams(location.search);
-let roomCode = (params.get("room") || "").toUpperCase();
+let roomCode = (params.get("room") || "").replace(/\D/g, "").slice(0, 4);
 let role = null;          // "host" | "player" | null
-let peer = null;
-let hostConn = null;      // player side: connection to host
-let conns = {};           // host side: cid -> { conn, name }
+let client = null;        // MQTT client
+let conns = {};           // host side: cid -> { name, lastSeen }
 let screen = "home";      // home | connecting | game
 let notice = "";
-let retryTimer = null;
+let formError = "";
 
 // ======= Game state =======
 // host: full game state (host only)
@@ -186,7 +188,6 @@ let localEndsAt = 0;
 
 // ======= UI-only state =======
 let duration = 60;
-let customWords = "";
 let wordShown = false;
 let audioCtx = null;
 let runningKey = "";
@@ -207,9 +208,7 @@ function shuffle(arr) {
 }
 
 function newCode() {
-  let c = "";
-  for (let i = 0; i < 5; i++) c += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
-  return c;
+  return String(Math.floor(Math.random() * 10000)).padStart(4, "0");
 }
 
 function shareLink() {
@@ -259,76 +258,150 @@ function alarm() {
 }
 
 // =====================================================================
-// ======= HOST SIDE =======
+// ======= CONNECTION (MQTT relay over secure WebSocket) =======
 // =====================================================================
+// All messages go through a public relay server, so it works across
+// different networks (Wi-Fi, LTE, company networks) without P2P tricks.
 
-function startHosting(code, savedHost) {
-  role = "host";
-  roomCode = code;
-  screen = "connecting";
-  host = savedHost || { phase: "lobby" };
-  render();
+function topic(name) { return TOPIC_ROOT + roomCode + "/" + name; }
 
-  peer = new Peer(ID_PREFIX + code);
+function pub(name, obj, opts) {
+  if (client && client.connected) client.publish(topic(name), JSON.stringify(obj), opts || { qos: 0 });
+}
 
-  peer.on("open", () => {
-    history.replaceState(null, "", "?room=" + code);
-    save("tele-host", { code: code });
-    screen = "game";
-    notice = "";
-    hostSend();
-  });
-
-  peer.on("connection", conn => {
-    conn.on("data", msg => onHostData(conn, msg));
-    conn.on("close", () => {
-      if (conn.cid && conns[conn.cid] && conns[conn.cid].conn === conn) {
-        conns[conn.cid].online = false;
-        hostSend();
-      }
-    });
-  });
-
-  peer.on("disconnected", () => { try { peer.reconnect(); } catch (e) {} });
-
-  peer.on("error", err => {
-    if (err.type === "unavailable-id") {
-      // The old host tab may still hold this id for a few seconds
-      notice = "방을 다시 여는 중이에요… 잠시만 기다려 주세요.";
-      render();
-      try { peer.destroy(); } catch (e) {}
-      clearTimeout(retryTimer);
-      retryTimer = setTimeout(() => startHosting(code, host), 3000);
-    } else if (err.type === "network" || err.type === "server-error" || err.type === "socket-error") {
-      notice = "연결 서버에 닿지 않아요. 인터넷 연결을 확인해 주세요.";
-      render();
+function ensureClient(will) {
+  return new Promise(resolve => {
+    if (client) {
+      if (client.connected) resolve();
+      else client.once("connect", () => resolve());
+      return;
     }
+    const opts = {
+      clientId: "tele_" + myCid + "_" + Math.random().toString(36).slice(2, 6),
+      clean: true,
+      reconnectPeriod: 2000,
+      connectTimeout: 8000,
+      keepalive: 20
+    };
+    if (will) opts.will = will;
+    client = mqtt.connect(BROKER, opts);
+    const slow = setTimeout(() => {
+      if (!client.connected) { notice = "연결 서버에 접속하는 중이에요… 인터넷 연결을 확인해 주세요."; render(); }
+    }, 6000);
+    client.on("connect", () => {
+      clearTimeout(slow);
+      if (notice.indexOf("연결") === 0 || notice.indexOf("인터넷") === 0) notice = "";
+      resubscribe();
+      resolve();
+      render();
+    });
+    client.on("offline", () => { notice = "인터넷 연결이 불안정해요. 다시 연결하는 중…"; render(); });
+    client.on("message", onMessage);
   });
 }
 
-function onHostData(conn, msg) {
-  if (!msg || typeof msg !== "object") return;
-  if (msg.t === "hello") {
-    const cid = String(msg.cid || "").slice(0, 20);
-    const name = String(msg.name || "").trim().slice(0, 12) || "이름없음";
-    if (!cid) return;
-    conn.cid = cid;
-    conns[cid] = { conn: conn, name: name, online: true };
-    hostSend();
+// Subscriptions are lost on reconnect, so set them again every time
+function resubscribe() {
+  if (role === "host") client.subscribe([topic("hello"), topic("bye")]);
+  if (role === "player") client.subscribe([topic("state/" + myCid), topic("host")]);
+}
+
+function onMessage(t, payload) {
+  const prefix = TOPIC_ROOT + roomCode + "/";
+  if (t.indexOf(prefix) !== 0) return;
+  let msg = null;
+  try { msg = payload.length ? JSON.parse(payload.toString()) : null; } catch (e) { return; }
+  const name = t.slice(prefix.length);
+  if (role === "host") onHostMsg(name, msg);
+  if (role === "player") onPlayerMsg(name, msg);
+}
+
+// A room is busy if another host refreshed its marker recently
+function roomBusy(code) {
+  return new Promise(resolve => {
+    const t = TOPIC_ROOT + code + "/host";
+    let done = false;
+    const finish = v => {
+      if (done) return;
+      done = true;
+      client.removeListener("message", handler);
+      client.unsubscribe(t);
+      resolve(v);
+    };
+    const handler = (tp, payload) => {
+      if (tp !== t) return;
+      let m = null;
+      try { m = JSON.parse(payload.toString()); } catch (e) {}
+      finish(!!(m && m.cid !== myCid && Date.now() - m.at < HOST_STALE_MS));
+    };
+    client.on("message", handler);
+    client.subscribe(t);
+    setTimeout(() => finish(false), 1500);
+  });
+}
+
+// =====================================================================
+// ======= HOST SIDE =======
+// =====================================================================
+
+async function createRoom() {
+  screen = "connecting";
+  render();
+  await ensureClient(null);
+  for (let i = 0; i < 6; i++) {
+    const code = newCode();
+    if (!(await roomBusy(code))) { startHosting(code, null); return; }
   }
+  notice = "방을 만들지 못했어요. 다시 시도해 주세요.";
+  screen = "home";
+  render();
+}
+
+async function startHosting(code, savedHost) {
+  role = "host";
+  roomCode = code;
+  host = savedHost || { phase: "lobby" };
+  screen = "connecting";
+  render();
+  await ensureClient(null);
+  resubscribe();
+  history.replaceState(null, "", "?room=" + code);
+  screen = "game";
+  hostSend();
+}
+
+function onHostMsg(name, msg) {
+  if (!msg) return;
+  const cid = String(msg.cid || "").slice(0, 20);
+  if (!cid || cid === myCid) return;
+  if (name === "hello") {
+    const nm = String(msg.name || "").trim().slice(0, 12) || "이름없음";
+    const known = conns[cid];
+    const wasOnline = known && isOnline(cid);
+    conns[cid] = { name: nm, lastSeen: Date.now() };
+    // Reply right away to newcomers and returning players
+    if (!wasOnline || known.name !== nm) hostSend();
+  } else if (name === "bye") {
+    if (conns[cid]) { conns[cid].lastSeen = 0; hostSend(); }
+  }
+}
+
+function isOnline(cid) {
+  if (cid === myCid) return true;
+  return !!conns[cid] && Date.now() - conns[cid].lastSeen < PLAYER_STALE_MS;
 }
 
 // Everyone currently connected, host first
 function lobbyList() {
   const list = [{ peer: myCid, name: myName }];
   Object.keys(conns).forEach(cid => {
-    if (conns[cid].online && cid !== myCid) list.push({ peer: cid, name: conns[cid].name });
+    if (isOnline(cid)) list.push({ peer: cid, name: conns[cid].name });
   });
   return list;
 }
 
 function onlineList() {
-  return [myCid].concat(Object.keys(conns).filter(cid => conns[cid].online));
+  return [myCid].concat(Object.keys(conns).filter(isOnline));
 }
 
 // Build the view one player is allowed to see (only their own word)
@@ -339,18 +412,13 @@ function viewFor(cid) {
   if (host.words && host.phase !== "finished") s.words = { [cid]: host.words[cid] };
   s.lobby = lobbyList();
   s.online = onlineList();
-  s.you = cid;
   return s;
 }
 
 function hostSend() {
   if (role !== "host" || !host) return;
-  Object.keys(conns).forEach(cid => {
-    const c = conns[cid];
-    if (c.online && c.conn.open) {
-      try { c.conn.send({ t: "state", s: viewFor(cid) }); } catch (e) {}
-    }
-  });
+  Object.keys(conns).forEach(cid => pub("state/" + cid, viewFor(cid)));
+  pub("host", { cid: myCid, at: Date.now() }, { qos: 0, retain: true });
   save("tele-host", { code: roomCode, host: host });
   applyState(viewFor(myCid));
 }
@@ -358,11 +426,9 @@ function hostSend() {
 function hostStartGame() {
   const list = shuffle(lobbyList());
   if (list.length < 2) return;
-  const extra = customWords.split(/[,\n]/).map(w => w.trim()).filter(Boolean);
-  // Custom words go first so they are more likely to be picked
-  const ordered = shuffle(extra).concat(shuffle(WORDS.filter(w => !extra.includes(w))));
-  const words = {};
-  list.forEach((p, i) => { words[p.peer] = ordered[i % ordered.length]; });
+  const words = shuffle(WORDS);
+  const wordMap = {};
+  list.forEach((p, i) => { wordMap[p.peer] = words[i % words.length]; });
   host = {
     id: Math.random().toString(36).slice(2, 8),
     phase: "ready",
@@ -371,7 +437,7 @@ function hostStartGame() {
     duration: duration,
     remaining: duration * 1000,
     players: list,
-    words: words,
+    words: wordMap,
     hostPeer: myCid
   };
   hostSend();
@@ -411,73 +477,57 @@ function hostReset() {
 // ======= PLAYER SIDE =======
 // =====================================================================
 
-function startJoining(code) {
+let lastHostMsg = 0;
+let hostMarker = null;
+
+async function startJoining(code) {
   role = "player";
   roomCode = code;
   screen = "connecting";
   notice = "";
   render();
   history.replaceState(null, "", "?room=" + code);
-
-  peer = new Peer();
-  peer.on("open", () => connectToHost());
-  peer.on("disconnected", () => { try { peer.reconnect(); } catch (e) {} });
-  peer.on("error", err => {
-    if (err.type === "peer-unavailable") {
-      notice = screen === "game"
-        ? "방장과 연결이 끊겼어요. 다시 연결하는 중…"
-        : "방을 찾을 수 없어요. 코드를 확인하거나, 방장이 방을 열어 두었는지 확인해 주세요. 다시 시도하는 중…";
-      render();
-      scheduleReconnect();
-    } else if (err.type === "network" || err.type === "server-error" || err.type === "socket-error") {
-      notice = "연결 서버에 닿지 않아요. 인터넷 연결을 확인해 주세요.";
+  await ensureClient({ topic: topic("bye"), payload: JSON.stringify({ cid: myCid }), qos: 0, retain: false });
+  resubscribe();
+  sayHello();
+  // If nothing comes back, tell the player why they are waiting
+  setTimeout(() => {
+    if (role === "player" && screen === "connecting") {
+      notice = hostMarker && Date.now() - hostMarker.at < HOST_STALE_MS
+        ? "방장에게 연결하는 중이에요…"
+        : "방을 찾을 수 없어요. 방 번호를 확인하거나, 방장이 방을 열어 두었는지 확인해 주세요. 계속 기다리는 중…";
       render();
     }
-  });
+  }, 4000);
 }
 
-function connectToHost() {
-  if (hostConn) { try { hostConn.close(); } catch (e) {} }
-  const conn = peer.connect(ID_PREFIX + roomCode, { reliable: true });
-  hostConn = conn;
-  conn.on("open", () => {
-    conn.send({ t: "hello", cid: myCid, name: myName });
-  });
-  conn.on("data", msg => {
-    if (!msg || msg.t !== "state") return;
+function sayHello() {
+  pub("hello", { cid: myCid, name: myName });
+}
+
+function onPlayerMsg(name, msg) {
+  if (name === "host") { hostMarker = msg; return; }
+  if (name === "state/" + myCid && msg) {
     screen = "game";
     notice = "";
     lastHostMsg = Date.now();
-    applyState(msg.s);
-  });
-  conn.on("close", () => {
-    if (hostConn !== conn) return;
-    notice = "방장과 연결이 끊겼어요. 다시 연결하는 중…";
-    render();
-    scheduleReconnect();
-  });
-}
-
-function scheduleReconnect() {
-  clearTimeout(retryTimer);
-  retryTimer = setTimeout(() => {
-    if (peer && !peer.destroyed) {
-      if (peer.disconnected) { try { peer.reconnect(); } catch (e) {} }
-      else connectToHost();
-    }
-  }, 3000);
-}
-
-// Host sends state every 3 seconds, so silence means trouble
-let lastHostMsg = 0;
-setInterval(() => {
-  if (role === "player" && screen === "game" && Date.now() - lastHostMsg > 9000) {
-    lastHostMsg = Date.now();
-    notice = "방장과 연결이 끊긴 것 같아요. 다시 연결하는 중…";
-    render();
-    connectToHost();
+    applyState(msg);
   }
-}, 3000);
+}
+
+// Players say hello regularly so the host knows who is still here
+setInterval(() => {
+  if (role !== "player" || !client || !client.connected) return;
+  sayHello();
+  if (screen === "game" && Date.now() - lastHostMsg > 10000) {
+    notice = "방장과 연결이 끊긴 것 같아요. 방장이 돌아오면 이어집니다.";
+    render();
+  }
+}, 4000);
+
+window.addEventListener("pagehide", () => {
+  if (role === "player") pub("bye", { cid: myCid });
+});
 
 // =====================================================================
 // ======= SHARED: state, timer, render =======
@@ -551,18 +601,20 @@ function render() {
 // ======= Views =======
 function homeView() {
   const joining = !!roomCode;
+  const codeInput = `<input id="codeInput" maxlength="4" inputmode="numeric" pattern="[0-9]*" placeholder="방 번호 4자리" value="${esc(roomCode)}">`;
   return `
     <div class="card">
       <div class="label">닉네임</div>
-      <input id="nameInput" maxlength="12" placeholder="예: 민지" value="${esc(myName)}">
+      <input id="nameInput" maxlength="12" placeholder="예: 태히" value="${esc(myName)}">
+      ${formError ? `<div class="err">${esc(formError)}</div>` : ""}
       ${joining ? `
-        <div class="label mt">방 코드</div>
-        <input id="codeInput" maxlength="5" value="${esc(roomCode)}" style="text-transform:uppercase">
+        <div class="label mt">방 번호</div>
+        ${codeInput}
         <button id="joinBtn" class="mt blue">참가하기</button>
       ` : `
         <button id="createBtn" class="mt">🏠 방 만들기 (방장)</button>
         <div class="or">또는 친구 방에 참가</div>
-        <input id="codeInput" maxlength="5" placeholder="방 코드 5자리" style="text-transform:uppercase">
+        ${codeInput}
         <button id="joinBtn" class="mt blue">참가하기</button>
       `}
       <div class="status">입장하면 알람 소리가 켜져요 🔔</div>
@@ -587,10 +639,13 @@ function lobbyView() {
   if (role === "host") {
     html += `
       <div class="card">
-        <div class="label">친구에게 이 링크나 코드를 보내세요</div>
+        <div class="label">친구에게 이 링크나 방 번호를 보내세요</div>
         <div class="code">${esc(roomCode)}</div>
-        <div class="link">${esc(shareLink())}</div>
-        <button id="copyBtn" class="ghost">🔗 링크 복사</button>
+        <input id="linkBox" class="link-box" readonly value="${esc(shareLink())}">
+        <div class="row mt">
+          <button id="copyBtn" class="ghost">🔗 링크 복사</button>
+          ${navigator.share ? '<button id="shareBtn" class="ghost">📤 공유하기</button>' : ""}
+        </div>
       </div>`;
   }
   html += `
@@ -605,8 +660,6 @@ function lobbyView() {
         <select id="durSel">
           ${[30, 45, 60, 90, 120].map(s => `<option value="${s}" ${s === duration ? "selected" : ""}>${s}초</option>`).join("")}
         </select>
-        <div class="label mt">추가 단어 (쉼표로 구분, 선택)</div>
-        <textarea id="customInput" placeholder="예: 우리 팀장님, 야근, 회식">${esc(customWords)}</textarea>
         <button id="startGameBtn" class="mt" ${list.length < 2 ? "disabled" : ""}>게임 시작 (${list.length}명)</button>
         <div class="status">2명 이상이면 시작할 수 있어요 · 방장은 이 창을 닫지 마세요</div>
       </div>`;
@@ -735,35 +788,72 @@ function on(id, fn) {
 function readName() {
   const input = document.getElementById("nameInput");
   const name = input.value.trim().slice(0, 12);
-  if (!name) { input.focus(); return null; }
+  if (!name) {
+    formError = "닉네임을 입력해 주세요";
+    lastHtml = "";
+    render();
+    document.getElementById("nameInput").focus();
+    return null;
+  }
+  formError = "";
   myName = name;
   save("tele-name", name);
   return name;
+}
+
+// Copy with the modern API, then fall back to the old select-and-copy way
+function copyText(text) {
+  const box = document.getElementById("linkBox");
+  const fallback = () => {
+    try {
+      box.focus();
+      box.select();
+      box.setSelectionRange(0, text.length);
+      return document.execCommand("copy");
+    } catch (e) { return false; }
+  };
+  const report = ok => {
+    const b = document.getElementById("copyBtn");
+    if (b) b.textContent = ok ? "✅ 복사됐어요" : "길게 눌러 직접 복사해 주세요";
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => report(true)).catch(() => report(fallback()));
+  } else {
+    report(fallback());
+  }
 }
 
 function bind() {
   on("createBtn", () => {
     if (!readName()) return;
     unlockAudio();
-    startHosting(newCode(), null);
+    createRoom();
   });
   on("joinBtn", () => {
     if (!readName()) return;
-    const code = document.getElementById("codeInput").value.trim().toUpperCase();
-    if (code.length !== 5) { document.getElementById("codeInput").focus(); return; }
+    const input = document.getElementById("codeInput");
+    const code = input.value.replace(/\D/g, "");
+    if (code.length !== 4) {
+      formError = "방 번호 4자리를 입력해 주세요";
+      lastHtml = "";
+      render();
+      document.getElementById("codeInput").focus();
+      return;
+    }
     unlockAudio();
     startJoining(code);
   });
-  on("copyBtn", () => {
-    const link = shareLink();
-    const done = () => { const b = document.getElementById("copyBtn"); if (b) b.textContent = "✅ 복사됐어요"; };
-    if (navigator.clipboard) navigator.clipboard.writeText(link).then(done).catch(() => {});
+  on("copyBtn", () => copyText(shareLink()));
+  on("shareBtn", () => {
+    navigator.share({ title: "텔레스트레이션", text: "방 번호 " + roomCode, url: shareLink() }).catch(() => {});
   });
+  const lb = document.getElementById("linkBox");
+  if (lb) lb.addEventListener("focus", () => lb.select());
+  const ci = document.getElementById("codeInput");
+  if (ci) ci.addEventListener("input", () => { ci.value = ci.value.replace(/\D/g, "").slice(0, 4); });
 
   const dur = document.getElementById("durSel");
   if (dur) dur.addEventListener("change", () => { duration = Number(dur.value); });
-  const cw = document.getElementById("customInput");
-  if (cw) cw.addEventListener("input", () => { customWords = cw.value; });
   const w = document.getElementById("myWord");
   if (w && w.dataset.toggle === "1") w.addEventListener("click", () => { wordShown = !wordShown; render(); });
 
@@ -776,16 +866,15 @@ function bind() {
 }
 
 // ======= Startup =======
-if (typeof Peer === "undefined") {
-  notice = "연결 도구(PeerJS)를 불러오지 못했어요. 인터넷 연결을 확인하고 새로고침해 주세요.";
+if (typeof mqtt === "undefined") {
+  notice = "연결 도구를 불러오지 못했어요. 인터넷 연결을 확인하고 새로고침해 주세요.";
 }
 
 // A host who reloads the page gets their room back
 const savedHost = load("tele-host", null);
-if (roomCode && savedHost && savedHost.code === roomCode && myName && typeof Peer !== "undefined") {
-  unlockAudio();
+if (roomCode && savedHost && savedHost.code === roomCode && myName && typeof mqtt !== "undefined") {
   const h = savedHost.host || { phase: "lobby" };
-  // A running round cannot resume its clock after reload, so pause it
+  // The round clock cannot keep running across a reload, so pause it
   if (h.phase === "running") {
     h.phase = "paused";
     h.remaining = Math.max(0, (h.endsAt || 0) - Date.now());
