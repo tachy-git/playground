@@ -118,8 +118,6 @@
     font-size: 13px; padding: 10px 12px; border-radius: 12px;
     background: #fff4d6; color: #7a5b00; margin-bottom: 14px;
   }
-  .reveal li { justify-content: space-between; }
-  .reveal b { font-family: "Jua", sans-serif; font-weight: 400; font-size: 20px; }
 </style>
 </head>
 <body>
@@ -403,8 +401,8 @@ function viewFor(cid) {
   const s = Object.assign({}, host);
   delete s.endsAt;
   if (host.phase === "running") s.remaining = Math.max(0, host.endsAt - Date.now());
-  // Each player only gets the word they draw in round 1, until the end
-  if (host.words && host.phase !== "finished") s.words = { [cid]: host.firstWord[cid] };
+  // Each player only gets the word they draw in round 1
+  if (host.words) s.words = { [cid]: host.firstWord[cid] };
   delete s.firstWord;
   s.lobby = lobbyList();
   s.online = onlineList();
@@ -750,12 +748,6 @@ function finishedView() {
     <div class="card" style="text-align:center">
       <div class="task draw">🎉 게임 끝!</div>
       <div>스케치북을 원래 주인 순서대로 한 장씩 공개해 보세요</div>
-    </div>
-    <div class="card">
-      <div class="label">처음 단어 공개</div>
-      <ul class="players reveal">
-        ${state.players.map(p => `<li><span>${esc(p.name)}${p.peer === myCid ? ' <span class="tag me">나</span>' : ""}</span><b>${esc(state.words[p.peer])}</b></li>`).join("")}
-      </ul>
     </div>
     ${role === "host" ? '<div class="card"><button id="hReset">한 판 더 하기</button></div>' : ""}`;
 }
