@@ -105,7 +105,6 @@
     background: var(--accent-soft); text-align: center;
   }
   .word { font-family: "Jua", sans-serif; font-size: 34px; letter-spacing: 1px; cursor: pointer; }
-  .word.hidden { filter: blur(10px); user-select: none; }
   .timer {
     font-family: "Jua", sans-serif;
     font-size: 84px; text-align: center; line-height: 1; margin: 6px 0 10px;
@@ -118,10 +117,6 @@
   .notice {
     font-size: 13px; padding: 10px 12px; border-radius: 12px;
     background: #fff4d6; color: #7a5b00; margin-bottom: 14px;
-  }
-  .pass {
-    margin-top: 10px; padding: 12px; border-radius: 12px;
-    background: var(--blue-soft); color: var(--blue); font-weight: 600; text-align: center;
   }
   .reveal li { justify-content: space-between; }
   .reveal b { font-family: "Jua", sans-serif; font-weight: 400; font-size: 20px; }
@@ -188,7 +183,6 @@ let localEndsAt = 0;
 
 // ======= UI-only state =======
 let duration = 60;
-let wordShown = false;
 let audioCtx = null;
 let runningKey = "";
 let alarmedKey = "";
@@ -409,7 +403,9 @@ function viewFor(cid) {
   const s = Object.assign({}, host);
   delete s.endsAt;
   if (host.phase === "running") s.remaining = Math.max(0, host.endsAt - Date.now());
-  if (host.words && host.phase !== "finished") s.words = { [cid]: host.words[cid] };
+  // Each player only gets the word they draw in round 1, until the end
+  if (host.words && host.phase !== "finished") s.words = { [cid]: host.firstWord[cid] };
+  delete s.firstWord;
   s.lobby = lobbyList();
   s.online = onlineList();
   return s;
@@ -426,18 +422,30 @@ function hostSend() {
 function hostStartGame() {
   const list = shuffle(lobbyList());
   if (list.length < 2) return;
+  const n = list.length;
   const words = shuffle(WORDS);
   const wordMap = {};
   list.forEach((p, i) => { wordMap[p.peer] = words[i % words.length]; });
+
+  // Even players: draw your own word first, then pass (n rounds).
+  // Odd players: pass your word without drawing, so the next person
+  // draws it first (n - 1 rounds). Either way every book ends on a guess.
+  const odd = n % 2 === 1;
+  const firstWord = {};
+  list.forEach((p, i) => {
+    const owner = odd ? list[(i - 1 + n) % n] : p;
+    firstWord[p.peer] = wordMap[owner.peer];
+  });
   host = {
     id: Math.random().toString(36).slice(2, 8),
     phase: "ready",
     round: 1,
-    total: list.length,
+    total: odd ? n - 1 : n,
     duration: duration,
     remaining: duration * 1000,
     players: list,
     words: wordMap,
+    firstWord: firstWord,
     hostPeer: myCid
   };
   hostSend();
@@ -670,52 +678,36 @@ function lobbyView() {
 }
 
 function myInfo() {
-  const list = state.players;
-  const n = list.length;
-  const i = list.findIndex(p => p.peer === myCid);
-  const r = state.round;
   return {
-    n, i, r,
+    r: state.round,
+    n: state.total,
     word: state.words ? state.words[myCid] : "?",
-    book: list[((i - (r - 1)) % n + n) % n],
-    next: list[(i + 1) % n],
-    prev: list[(i - 1 + n) % n],
-    draw: r % 2 === 1
+    draw: state.round % 2 === 1
   };
 }
 
 function gameView() {
   const m = myInfo();
-  let taskText = "";
-  if (m.r === 1) taskText = "내 단어를 그림으로 그리세요";
-  else if (m.draw) taskText = `${esc(m.prev.name)}님이 적은 단어를 보고 그리세요`;
-  else taskText = `${esc(m.prev.name)}님의 그림을 보고 단어를 적으세요`;
-
   let html = `
     <div class="card">
       <div class="round">라운드 ${m.r} / ${m.n}</div>
       <div class="task ${m.draw ? "draw" : "guess"}">${m.draw ? "✏️ 그리기" : "🤔 추측하기"}</div>
-      <div>${taskText}</div>
-      <div class="status" style="text-align:left">📒 지금 들고 있는 것: <b>${esc(m.book.name)}</b>님의 스케치북</div>
-      ${m.r === 1 ? wordBoxHtml(m.word, false) : ""}
+      ${m.r === 1 ? wordBoxHtml(m.word) : ""}
     </div>
     <div class="card">
       <div class="timer" id="timer">${fmt(remainingMs())}</div>
       <div class="bar"><div id="barFill" style="width:100%"></div></div>
       <div class="status">${phaseText()}</div>
-      ${state.phase === "roundEnd" ? `<div class="pass">📸 결과를 사진 찍어 <b>${esc(m.next.name)}</b>님에게 보내세요</div>` : ""}
     </div>`;
-  if (m.r !== 1) html += `<div class="card">${wordBoxHtml(m.word, true)}</div>`;
   html += hostControlsHtml();
-  html += `<div class="card"><div class="label">넘기는 순서 (1 → 2 → … → 마지막 → 다시 1)</div>${playerListHtml(state.players)}</div>`;
   return html;
 }
 
-function wordBoxHtml(word, hiddenByDefault) {
+function wordBoxHtml(word) {
   return `
     <div class="word-box">
-      <div class="label">내 처음 단어 ${hiddenByDefault ? "(눌러서 보기/숨기기)" : ""}</div>
-      <div class="word ${hiddenByDefault && !wordShown ? "hidden" : ""}" id="myWord" data-toggle="${hiddenByDefault ? 1 : 0}">${esc(word || "?")}</div>
+      <div class="label">그릴 단어</div>
+      <div class="word">${esc(word || "?")}</div>
     </div>`;
 }
 
@@ -854,8 +846,6 @@ function bind() {
 
   const dur = document.getElementById("durSel");
   if (dur) dur.addEventListener("change", () => { duration = Number(dur.value); });
-  const w = document.getElementById("myWord");
-  if (w && w.dataset.toggle === "1") w.addEventListener("click", () => { wordShown = !wordShown; render(); });
 
   on("startGameBtn", () => { unlockAudio(); hostStartGame(); });
   on("hStart", () => { unlockAudio(); hostStartRound(); });
