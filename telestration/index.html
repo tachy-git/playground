@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>텔레스트레이션 진행 도우미</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Jua&family=Noto+Sans+KR:wght@400;600;800&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+  :root {
+    --bg: #fdf6ec;
+    --card: #ffffff;
+    --ink: #2b2a33;
+    --muted: #7b7686;
+    --line: #ece3d6;
+    --accent: #ff6b4a;
+    --accent-soft: #ffe3da;
+    --blue: #3d6bff;
+    --blue-soft: #e2e9ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Noto Sans KR", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    min-height: 100vh;
+  }
+  body.flash { animation: flash 0.5s 4; }
+  @keyframes flash { 50% { background: var(--accent); } }
+  .wrap { max-width: 480px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-family: "Jua", sans-serif; font-weight: 400; font-size: 28px; margin: 4px 0 2px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 18px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 18px;
+    margin-bottom: 14px;
+    box-shadow: 0 2px 0 var(--line);
+  }
+  .label { font-size: 13px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
+  input, select, textarea {
+    width: 100%;
+    font: inherit;
+    font-size: 16px;
+    padding: 12px 14px;
+    border: 1.5px solid var(--line);
+    border-radius: 12px;
+    background: #fffdf9;
+    color: var(--ink);
+  }
+  textarea { min-height: 70px; resize: vertical; }
+  button {
+    font: inherit;
+    font-weight: 800;
+    font-size: 16px;
+    border: none;
+    border-radius: 14px;
+    padding: 14px 16px;
+    cursor: pointer;
+    background: var(--accent);
+    color: #fff;
+    width: 100%;
+  }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.ghost { background: var(--accent-soft); color: var(--accent); }
+  button.blue { background: var(--blue); }
+  button.small { width: auto; padding: 8px 12px; font-size: 13px; border-radius: 10px; }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  .mt { margin-top: 12px; }
+  .or { text-align: center; color: var(--muted); font-size: 13px; margin: 16px 0; }
+  .players { list-style: none; padding: 0; margin: 0; }
+  .players li {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 0; border-bottom: 1px dashed var(--line);
+  }
+  .players li:last-child { border-bottom: none; }
+  .players li.off { opacity: 0.45; }
+  .dot {
+    width: 30px; height: 30px; border-radius: 50%;
+    display: grid; place-items: center;
+    font-weight: 800; font-size: 13px; color: #fff; background: var(--blue);
+    flex: none;
+  }
+  .tag {
+    font-size: 11px; font-weight: 800; padding: 2px 7px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent);
+  }
+  .tag.me { background: var(--blue-soft); color: var(--blue); }
+  .code {
+    font-family: "Jua", sans-serif; font-size: 40px; letter-spacing: 6px;
+    text-align: center; margin: 4px 0 10px;
+  }
+  .link { font-size: 13px; word-break: break-all; color: var(--muted); text-align: center; margin-bottom: 10px; }
+  .round { font-family: "Jua", sans-serif; font-size: 18px; color: var(--muted); }
+  .task { font-family: "Jua", sans-serif; font-size: 30px; margin: 6px 0; }
+  .task.draw { color: var(--accent); }
+  .task.guess { color: var(--blue); }
+  .word-box {
+    margin-top: 10px; padding: 14px; border-radius: 14px;
+    background: var(--accent-soft); text-align: center;
+  }
+  .word { font-family: "Jua", sans-serif; font-size: 34px; letter-spacing: 1px; cursor: pointer; }
+  .word.hidden { filter: blur(10px); user-select: none; }
+  .timer {
+    font-family: "Jua", sans-serif;
+    font-size: 84px; text-align: center; line-height: 1; margin: 6px 0 10px;
+    font-variant-numeric: tabular-nums;
+  }
+  .timer.low { color: var(--accent); }
+  .bar { height: 10px; background: var(--line); border-radius: 999px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--accent); transition: width 0.2s linear; }
+  .status { text-align: center; color: var(--muted); font-size: 14px; margin-top: 8px; }
+  .notice {
+    font-size: 13px; padding: 10px 12px; border-radius: 12px;
+    background: #fff4d6; color: #7a5b00; margin-bottom: 14px;
+  }
+  .pass {
+    margin-top: 10px; padding: 12px; border-radius: 12px;
+    background: var(--blue-soft); color: var(--blue); font-weight: 600; text-align: center;
+  }
+  .reveal li { justify-content: space-between; }
+  .reveal b { font-family: "Jua", sans-serif; font-weight: 400; font-size: 20px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎨 텔레스트레이션</h1>
+  <div class="sub">단어 배정 · 방장 타이머 · 순서 안내</div>
+  <div id="notice"></div>
+  <div id="app"></div>
+</div>
+
+<script>
+// ======= Word pool =======
+const WORDS = [
+  "고양이","강아지","기린","펭귄","문어","공룡","토끼","거북이","코끼리","상어",
+  "피자","라면","김밥","떡볶이","아이스크림","수박","바나나","햄버거","치킨","케이크",
+  "우산","안경","시계","가위","칫솔","냉장고","자전거","비행기","로켓","잠수함",
+  "눈사람","무지개","화산","번개","달","해바라기","선인장","버섯","폭포","사막",
+  "의사","소방관","해적","마법사","로봇","유령","외계인","닌자","왕","요리사",
+  "축구","수영","스키","낚시","캠핑","노래방","생일파티","결혼식","소풍","이사",
+  "엘리베이터","지하철","놀이공원","병원","도서관","편의점","캠프파이어","등대","성","피라미드",
+  "기타","피아노","드럼","마이크","카메라","휴대폰","리모컨","전구","열쇠","풍선",
+  "잠꾸러기","거짓말","방귀","재채기","눈물","하품","셀카","줄다리기","숨바꼭질","월요병",
+  "택배","산타클로스","미라","인어공주","허수아비","시소","그네","미끄럼틀","모래성","불꽃놀이"
+];
+
+const ID_PREFIX = "telestr-kr-";
+const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+// ======= Small storage helpers (may be blocked, so always try/catch) =======
+function load(key, fallback) {
+  try { const v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v); } catch (e) { return fallback; }
+}
+function save(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+}
+
+// ======= Identity =======
+// clientId survives reloads, so a player who reconnects keeps their seat
+let myCid = load("tele-cid", null);
+if (!myCid) { myCid = Math.random().toString(36).slice(2, 10); save("tele-cid", myCid); }
+let myName = load("tele-name", "");
+
+// ======= Connection state =======
+const params = new URLSearchParams(location.search);
+let roomCode = (params.get("room") || "").toUpperCase();
+let role = null;          // "host" | "player" | null
+let peer = null;
+let hostConn = null;      // player side: connection to host
+let conns = {};           // host side: cid -> { conn, name }
+let screen = "home";      // home | connecting | game
+let notice = "";
+let retryTimer = null;
+
+// ======= Game state =======
+// host: full game state (host only)
+// state: what this screen renders (host gets its own view too)
+let host = null;
+let state = { phase: "lobby" };
+let localEndsAt = 0;
+
+// ======= UI-only state =======
+let duration = 60;
+let customWords = "";
+let wordShown = false;
+let audioCtx = null;
+let runningKey = "";
+let alarmedKey = "";
+
+// ======= Helpers =======
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function newCode() {
+  let c = "";
+  for (let i = 0; i < 5; i++) c += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  return c;
+}
+
+function shareLink() {
+  return location.origin + location.pathname + "?room=" + roomCode;
+}
+
+function remainingMs() {
+  if (state.phase === "running") return Math.max(0, localEndsAt - Date.now());
+  if (state.phase === "paused" || state.phase === "ready") return state.remaining || 0;
+  return 0;
+}
+
+function fmt(ms) {
+  const s = Math.ceil(ms / 1000);
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+// ======= Alarm sound / flash / vibrate =======
+function unlockAudio() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch (e) {}
+}
+
+function alarm() {
+  if (audioCtx) {
+    const t = audioCtx.currentTime;
+    for (let i = 0; i < 4; i++) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "square";
+      osc.frequency.value = i % 2 ? 660 : 880;
+      gain.gain.setValueAtTime(0.0001, t + i * 0.3);
+      gain.gain.exponentialRampToValueAtTime(0.25, t + i * 0.3 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.3 + 0.25);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t + i * 0.3);
+      osc.stop(t + i * 0.3 + 0.28);
+    }
+  }
+  try { navigator.vibrate && navigator.vibrate([300, 150, 300, 150, 300]); } catch (e) {}
+  document.body.classList.remove("flash");
+  void document.body.offsetWidth;
+  document.body.classList.add("flash");
+  setTimeout(() => document.body.classList.remove("flash"), 2200);
+}
+
+// =====================================================================
+// ======= HOST SIDE =======
+// =====================================================================
+
+function startHosting(code, savedHost) {
+  role = "host";
+  roomCode = code;
+  screen = "connecting";
+  host = savedHost || { phase: "lobby" };
+  render();
+
+  peer = new Peer(ID_PREFIX + code);
+
+  peer.on("open", () => {
+    history.replaceState(null, "", "?room=" + code);
+    save("tele-host", { code: code });
+    screen = "game";
+    notice = "";
+    hostSend();
+  });
+
+  peer.on("connection", conn => {
+    conn.on("data", msg => onHostData(conn, msg));
+    conn.on("close", () => {
+      if (conn.cid && conns[conn.cid] && conns[conn.cid].conn === conn) {
+        conns[conn.cid].online = false;
+        hostSend();
+      }
+    });
+  });
+
+  peer.on("disconnected", () => { try { peer.reconnect(); } catch (e) {} });
+
+  peer.on("error", err => {
+    if (err.type === "unavailable-id") {
+      // The old host tab may still hold this id for a few seconds
+      notice = "방을 다시 여는 중이에요… 잠시만 기다려 주세요.";
+      render();
+      try { peer.destroy(); } catch (e) {}
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => startHosting(code, host), 3000);
+    } else if (err.type === "network" || err.type === "server-error" || err.type === "socket-error") {
+      notice = "연결 서버에 닿지 않아요. 인터넷 연결을 확인해 주세요.";
+      render();
+    }
+  });
+}
+
+function onHostData(conn, msg) {
+  if (!msg || typeof msg !== "object") return;
+  if (msg.t === "hello") {
+    const cid = String(msg.cid || "").slice(0, 20);
+    const name = String(msg.name || "").trim().slice(0, 12) || "이름없음";
+    if (!cid) return;
+    conn.cid = cid;
+    conns[cid] = { conn: conn, name: name, online: true };
+    hostSend();
+  }
+}
+
+// Everyone currently connected, host first
+function lobbyList() {
+  const list = [{ peer: myCid, name: myName }];
+  Object.keys(conns).forEach(cid => {
+    if (conns[cid].online && cid !== myCid) list.push({ peer: cid, name: conns[cid].name });
+  });
+  return list;
+}
+
+function onlineList() {
+  return [myCid].concat(Object.keys(conns).filter(cid => conns[cid].online));
+}
+
+// Build the view one player is allowed to see (only their own word)
+function viewFor(cid) {
+  const s = Object.assign({}, host);
+  delete s.endsAt;
+  if (host.phase === "running") s.remaining = Math.max(0, host.endsAt - Date.now());
+  if (host.words && host.phase !== "finished") s.words = { [cid]: host.words[cid] };
+  s.lobby = lobbyList();
+  s.online = onlineList();
+  s.you = cid;
+  return s;
+}
+
+function hostSend() {
+  if (role !== "host" || !host) return;
+  Object.keys(conns).forEach(cid => {
+    const c = conns[cid];
+    if (c.online && c.conn.open) {
+      try { c.conn.send({ t: "state", s: viewFor(cid) }); } catch (e) {}
+    }
+  });
+  save("tele-host", { code: roomCode, host: host });
+  applyState(viewFor(myCid));
+}
+
+function hostStartGame() {
+  const list = shuffle(lobbyList());
+  if (list.length < 2) return;
+  const extra = customWords.split(/[,\n]/).map(w => w.trim()).filter(Boolean);
+  // Custom words go first so they are more likely to be picked
+  const ordered = shuffle(extra).concat(shuffle(WORDS.filter(w => !extra.includes(w))));
+  const words = {};
+  list.forEach((p, i) => { words[p.peer] = ordered[i % ordered.length]; });
+  host = {
+    id: Math.random().toString(36).slice(2, 8),
+    phase: "ready",
+    round: 1,
+    total: list.length,
+    duration: duration,
+    remaining: duration * 1000,
+    players: list,
+    words: words,
+    hostPeer: myCid
+  };
+  hostSend();
+}
+
+function hostStartRound() {
+  host.phase = "running";
+  host.endsAt = Date.now() + host.remaining;
+  hostSend();
+}
+
+function hostPause() {
+  host.remaining = Math.max(0, host.endsAt - Date.now());
+  host.phase = "paused";
+  hostSend();
+}
+
+function hostEndRound() {
+  host.remaining = 0;
+  host.phase = host.round >= host.total ? "finished" : "roundEnd";
+  hostSend();
+}
+
+function hostNextRound() {
+  host.round += 1;
+  host.phase = "ready";
+  host.remaining = host.duration * 1000;
+  hostSend();
+}
+
+function hostReset() {
+  host = { phase: "lobby" };
+  hostSend();
+}
+
+// =====================================================================
+// ======= PLAYER SIDE =======
+// =====================================================================
+
+function startJoining(code) {
+  role = "player";
+  roomCode = code;
+  screen = "connecting";
+  notice = "";
+  render();
+  history.replaceState(null, "", "?room=" + code);
+
+  peer = new Peer();
+  peer.on("open", () => connectToHost());
+  peer.on("disconnected", () => { try { peer.reconnect(); } catch (e) {} });
+  peer.on("error", err => {
+    if (err.type === "peer-unavailable") {
+      notice = screen === "game"
+        ? "방장과 연결이 끊겼어요. 다시 연결하는 중…"
+        : "방을 찾을 수 없어요. 코드를 확인하거나, 방장이 방을 열어 두었는지 확인해 주세요. 다시 시도하는 중…";
+      render();
+      scheduleReconnect();
+    } else if (err.type === "network" || err.type === "server-error" || err.type === "socket-error") {
+      notice = "연결 서버에 닿지 않아요. 인터넷 연결을 확인해 주세요.";
+      render();
+    }
+  });
+}
+
+function connectToHost() {
+  if (hostConn) { try { hostConn.close(); } catch (e) {} }
+  const conn = peer.connect(ID_PREFIX + roomCode, { reliable: true });
+  hostConn = conn;
+  conn.on("open", () => {
+    conn.send({ t: "hello", cid: myCid, name: myName });
+  });
+  conn.on("data", msg => {
+    if (!msg || msg.t !== "state") return;
+    screen = "game";
+    notice = "";
+    lastHostMsg = Date.now();
+    applyState(msg.s);
+  });
+  conn.on("close", () => {
+    if (hostConn !== conn) return;
+    notice = "방장과 연결이 끊겼어요. 다시 연결하는 중…";
+    render();
+    scheduleReconnect();
+  });
+}
+
+function scheduleReconnect() {
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => {
+    if (peer && !peer.destroyed) {
+      if (peer.disconnected) { try { peer.reconnect(); } catch (e) {} }
+      else connectToHost();
+    }
+  }, 3000);
+}
+
+// Host sends state every 3 seconds, so silence means trouble
+let lastHostMsg = 0;
+setInterval(() => {
+  if (role === "player" && screen === "game" && Date.now() - lastHostMsg > 9000) {
+    lastHostMsg = Date.now();
+    notice = "방장과 연결이 끊긴 것 같아요. 다시 연결하는 중…";
+    render();
+    connectToHost();
+  }
+}, 3000);
+
+// =====================================================================
+// ======= SHARED: state, timer, render =======
+// =====================================================================
+
+function applyState(s) {
+  if (!s || typeof s !== "object") return;
+  state = s;
+  if (s.phase === "running") {
+    localEndsAt = Date.now() + (s.remaining || 0);
+    runningKey = s.id + "-" + s.round;
+  }
+  // Ring when a round we watched ends but our local timer missed it
+  if ((s.phase === "roundEnd" || s.phase === "finished") && runningKey === s.id + "-" + s.round && alarmedKey !== runningKey) {
+    alarmedKey = runningKey;
+    alarm();
+  }
+  render();
+}
+
+// Tick: update timer, ring alarm, let host close the round
+setInterval(() => {
+  if (state.phase !== "running") return;
+  const left = remainingMs();
+  const key = state.id + "-" + state.round;
+  if (left <= 0 && alarmedKey !== key) {
+    alarmedKey = key;
+    alarm();
+  }
+  if (left <= 0 && role === "host" && host && host.phase === "running") hostEndRound();
+  updateTimer();
+}, 200);
+
+// Host re-sends full state so dropped messages recover
+setInterval(() => { if (role === "host" && screen === "game") hostSend(); }, 3000);
+
+let lastHtml = "";
+
+function render() {
+  const app = document.getElementById("app");
+  document.getElementById("notice").innerHTML = notice ? '<div class="notice">' + esc(notice) + "</div>" : "";
+
+  let html;
+  if (screen === "home") html = homeView();
+  else if (screen === "connecting") html = '<div class="card"><div class="status">연결하는 중… 📡</div></div>';
+  else if (state.phase === "lobby" || !state.players) html = lobbyView();
+  else if (state.phase === "finished") html = finishedView();
+  else if (!state.players.some(p => p.peer === myCid)) html = spectatorView();
+  else html = gameView();
+
+  // Skip identical output so inputs keep focus and nothing flickers
+  if (html === lastHtml) { updateTimer(); return; }
+  lastHtml = html;
+
+  // Keep focus and cursor in the field being typed in
+  const active = document.activeElement;
+  const focusId = active && active.id && app.contains(active) ? active.id : null;
+  const sel = focusId && "selectionStart" in active ? [active.selectionStart, active.selectionEnd] : null;
+  app.innerHTML = html;
+  if (focusId) {
+    const el = document.getElementById(focusId);
+    if (el) {
+      el.focus();
+      if (sel) try { el.setSelectionRange(sel[0], sel[1]); } catch (e) {}
+    }
+  }
+  bind();
+  updateTimer();
+}
+
+// ======= Views =======
+function homeView() {
+  const joining = !!roomCode;
+  return `
+    <div class="card">
+      <div class="label">닉네임</div>
+      <input id="nameInput" maxlength="12" placeholder="예: 민지" value="${esc(myName)}">
+      ${joining ? `
+        <div class="label mt">방 코드</div>
+        <input id="codeInput" maxlength="5" value="${esc(roomCode)}" style="text-transform:uppercase">
+        <button id="joinBtn" class="mt blue">참가하기</button>
+      ` : `
+        <button id="createBtn" class="mt">🏠 방 만들기 (방장)</button>
+        <div class="or">또는 친구 방에 참가</div>
+        <input id="codeInput" maxlength="5" placeholder="방 코드 5자리" style="text-transform:uppercase">
+        <button id="joinBtn" class="mt blue">참가하기</button>
+      `}
+      <div class="status">입장하면 알람 소리가 켜져요 🔔</div>
+    </div>`;
+}
+
+function playerListHtml(list) {
+  if (!list.length) return '<div class="status">아직 아무도 없어요</div>';
+  const online = state.online || [];
+  return '<ul class="players">' + list.map((p, i) => {
+    const me = p.peer === myCid;
+    const isHost = p.peer === (state.hostPeer || (role === "host" ? myCid : null)) || (state.phase === "lobby" && i === 0);
+    const off = !online.includes(p.peer);
+    return `<li class="${off ? "off" : ""}"><div class="dot">${i + 1}</div><div style="flex:1">${esc(p.name)}${off ? " (연결 끊김)" : ""}</div>
+      ${me ? '<span class="tag me">나</span>' : ""}${isHost ? '<span class="tag">방장</span>' : ""}</li>`;
+  }).join("") + "</ul>";
+}
+
+function lobbyView() {
+  const list = state.lobby || [];
+  let html = "";
+  if (role === "host") {
+    html += `
+      <div class="card">
+        <div class="label">친구에게 이 링크나 코드를 보내세요</div>
+        <div class="code">${esc(roomCode)}</div>
+        <div class="link">${esc(shareLink())}</div>
+        <button id="copyBtn" class="ghost">🔗 링크 복사</button>
+      </div>`;
+  }
+  html += `
+    <div class="card">
+      <div class="label">참가자 ${list.length}명</div>
+      ${playerListHtml(list)}
+    </div>`;
+  if (role === "host") {
+    html += `
+      <div class="card">
+        <div class="label">라운드 시간</div>
+        <select id="durSel">
+          ${[30, 45, 60, 90, 120].map(s => `<option value="${s}" ${s === duration ? "selected" : ""}>${s}초</option>`).join("")}
+        </select>
+        <div class="label mt">추가 단어 (쉼표로 구분, 선택)</div>
+        <textarea id="customInput" placeholder="예: 우리 팀장님, 야근, 회식">${esc(customWords)}</textarea>
+        <button id="startGameBtn" class="mt" ${list.length < 2 ? "disabled" : ""}>게임 시작 (${list.length}명)</button>
+        <div class="status">2명 이상이면 시작할 수 있어요 · 방장은 이 창을 닫지 마세요</div>
+      </div>`;
+  } else {
+    html += '<div class="status">방장이 게임을 시작하기를 기다리는 중…</div>';
+  }
+  return html;
+}
+
+function myInfo() {
+  const list = state.players;
+  const n = list.length;
+  const i = list.findIndex(p => p.peer === myCid);
+  const r = state.round;
+  return {
+    n, i, r,
+    word: state.words ? state.words[myCid] : "?",
+    book: list[((i - (r - 1)) % n + n) % n],
+    next: list[(i + 1) % n],
+    prev: list[(i - 1 + n) % n],
+    draw: r % 2 === 1
+  };
+}
+
+function gameView() {
+  const m = myInfo();
+  let taskText = "";
+  if (m.r === 1) taskText = "내 단어를 그림으로 그리세요";
+  else if (m.draw) taskText = `${esc(m.prev.name)}님이 적은 단어를 보고 그리세요`;
+  else taskText = `${esc(m.prev.name)}님의 그림을 보고 단어를 적으세요`;
+
+  let html = `
+    <div class="card">
+      <div class="round">라운드 ${m.r} / ${m.n}</div>
+      <div class="task ${m.draw ? "draw" : "guess"}">${m.draw ? "✏️ 그리기" : "🤔 추측하기"}</div>
+      <div>${taskText}</div>
+      <div class="status" style="text-align:left">📒 지금 들고 있는 것: <b>${esc(m.book.name)}</b>님의 스케치북</div>
+      ${m.r === 1 ? wordBoxHtml(m.word, false) : ""}
+    </div>
+    <div class="card">
+      <div class="timer" id="timer">${fmt(remainingMs())}</div>
+      <div class="bar"><div id="barFill" style="width:100%"></div></div>
+      <div class="status">${phaseText()}</div>
+      ${state.phase === "roundEnd" ? `<div class="pass">📸 결과를 사진 찍어 <b>${esc(m.next.name)}</b>님에게 보내세요</div>` : ""}
+    </div>`;
+  if (m.r !== 1) html += `<div class="card">${wordBoxHtml(m.word, true)}</div>`;
+  html += hostControlsHtml();
+  html += `<div class="card"><div class="label">넘기는 순서 (1 → 2 → … → 마지막 → 다시 1)</div>${playerListHtml(state.players)}</div>`;
+  return html;
+}
+
+function wordBoxHtml(word, hiddenByDefault) {
+  return `
+    <div class="word-box">
+      <div class="label">내 처음 단어 ${hiddenByDefault ? "(눌러서 보기/숨기기)" : ""}</div>
+      <div class="word ${hiddenByDefault && !wordShown ? "hidden" : ""}" id="myWord" data-toggle="${hiddenByDefault ? 1 : 0}">${esc(word || "?")}</div>
+    </div>`;
+}
+
+function phaseText() {
+  if (state.phase === "ready") return "방장이 라운드를 시작하면 타이머가 돌아가요";
+  if (state.phase === "running") return "진행 중!";
+  if (state.phase === "paused") return "⏸ 일시정지";
+  if (state.phase === "roundEnd") return "⏰ 시간 종료! 펜을 내려놓으세요";
+  return "";
+}
+
+function hostControlsHtml() {
+  if (role !== "host") return "";
+  let btns = "";
+  if (state.phase === "ready") btns = '<button id="hStart">▶ 라운드 시작</button>';
+  if (state.phase === "running") btns = '<div class="row"><button id="hPause" class="ghost">⏸ 일시정지</button><button id="hEnd" class="ghost">⏭ 바로 종료</button></div>';
+  if (state.phase === "paused") btns = '<div class="row"><button id="hStart">▶ 계속</button><button id="hEnd" class="ghost">⏭ 바로 종료</button></div>';
+  if (state.phase === "roundEnd") btns = '<button id="hNext" class="blue">다음 라운드로</button>';
+  return `
+    <div class="card">
+      <div class="label">방장 컨트롤</div>
+      ${btns}
+      <button id="hReset" class="ghost small mt">처음으로 (다시하기)</button>
+    </div>`;
+}
+
+function spectatorView() {
+  return `
+    <div class="card">
+      <div class="round">라운드 ${state.round} / ${state.total}</div>
+      <div class="task">👀 관전 중</div>
+      <div>이미 게임이 진행 중이에요. 다음 판에 함께해요!</div>
+      <div class="timer mt" id="timer">${fmt(remainingMs())}</div>
+      <div class="bar"><div id="barFill" style="width:100%"></div></div>
+    </div>`;
+}
+
+function finishedView() {
+  return `
+    <div class="card" style="text-align:center">
+      <div class="task draw">🎉 게임 끝!</div>
+      <div>스케치북을 원래 주인 순서대로 한 장씩 공개해 보세요</div>
+    </div>
+    <div class="card">
+      <div class="label">처음 단어 공개</div>
+      <ul class="players reveal">
+        ${state.players.map(p => `<li><span>${esc(p.name)}${p.peer === myCid ? ' <span class="tag me">나</span>' : ""}</span><b>${esc(state.words[p.peer])}</b></li>`).join("")}
+      </ul>
+    </div>
+    ${role === "host" ? '<div class="card"><button id="hReset">한 판 더 하기</button></div>' : ""}`;
+}
+
+function updateTimer() {
+  const t = document.getElementById("timer");
+  const bar = document.getElementById("barFill");
+  if (!t) return;
+  const left = remainingMs();
+  t.textContent = fmt(left);
+  t.classList.toggle("low", state.phase === "running" && left <= 10000);
+  const total = (state.duration || 60) * 1000;
+  if (bar) bar.style.width = (Math.max(0, Math.min(1, left / total)) * 100) + "%";
+}
+
+// ======= Event binding =======
+function on(id, fn) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("click", fn);
+}
+
+function readName() {
+  const input = document.getElementById("nameInput");
+  const name = input.value.trim().slice(0, 12);
+  if (!name) { input.focus(); return null; }
+  myName = name;
+  save("tele-name", name);
+  return name;
+}
+
+function bind() {
+  on("createBtn", () => {
+    if (!readName()) return;
+    unlockAudio();
+    startHosting(newCode(), null);
+  });
+  on("joinBtn", () => {
+    if (!readName()) return;
+    const code = document.getElementById("codeInput").value.trim().toUpperCase();
+    if (code.length !== 5) { document.getElementById("codeInput").focus(); return; }
+    unlockAudio();
+    startJoining(code);
+  });
+  on("copyBtn", () => {
+    const link = shareLink();
+    const done = () => { const b = document.getElementById("copyBtn"); if (b) b.textContent = "✅ 복사됐어요"; };
+    if (navigator.clipboard) navigator.clipboard.writeText(link).then(done).catch(() => {});
+  });
+
+  const dur = document.getElementById("durSel");
+  if (dur) dur.addEventListener("change", () => { duration = Number(dur.value); });
+  const cw = document.getElementById("customInput");
+  if (cw) cw.addEventListener("input", () => { customWords = cw.value; });
+  const w = document.getElementById("myWord");
+  if (w && w.dataset.toggle === "1") w.addEventListener("click", () => { wordShown = !wordShown; render(); });
+
+  on("startGameBtn", () => { unlockAudio(); hostStartGame(); });
+  on("hStart", () => { unlockAudio(); hostStartRound(); });
+  on("hPause", hostPause);
+  on("hEnd", hostEndRound);
+  on("hNext", hostNextRound);
+  on("hReset", hostReset);
+}
+
+// ======= Startup =======
+if (typeof Peer === "undefined") {
+  notice = "연결 도구(PeerJS)를 불러오지 못했어요. 인터넷 연결을 확인하고 새로고침해 주세요.";
+}
+
+// A host who reloads the page gets their room back
+const savedHost = load("tele-host", null);
+if (roomCode && savedHost && savedHost.code === roomCode && myName && typeof Peer !== "undefined") {
+  unlockAudio();
+  const h = savedHost.host || { phase: "lobby" };
+  // A running round cannot resume its clock after reload, so pause it
+  if (h.phase === "running") {
+    h.phase = "paused";
+    h.remaining = Math.max(0, (h.endsAt || 0) - Date.now());
+    delete h.endsAt;
+  }
+  startHosting(roomCode, h);
+} else {
+  render();
+}
+</script>
+</body>
+</html>
